@@ -1,0 +1,23 @@
+VÍDEOS DE EXEMPLO - MAPPEDUC v2.3
+==================================
+
+Esta pasta contém vídeos de exemplo para você testar o MappEduc.
+
+Sugestões de vídeos que funcionam bem:
+- Formas geométricas animadas
+- Gradientes de cor
+- Padrões de grade (para calibrar)
+- Animações curtas (até 30 segundos)
+
+Formatos suportados: MP4, AVI, MOV, MKV, WEBM
+
+Dica: Use vídeos curtos e com resolução moderada (até 720p) para 
+melhor performance em computadores menos potentes.
+
+✨ Novidade v2.3:
+- Chroma Key para remover cores específicas
+- Duplicação de camadas (Ctrl+D)
+- Substituir arquivo mantendo deformações
+
+Os vídeos nesta pasta são apenas exemplos. Você pode adicionar
+seus próprios vídeos através do programa.

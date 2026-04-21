@@ -1,0 +1,25 @@
+DOCUMENTAÇÃO DO MAPPEDUC v2.3
+=============================
+
+Esta pasta contém documentação adicional para o MappEduc.
+
+Arquivos sugeridos:
+- guia_educador.pdf: Guia completo com exemplos de aula
+- tutoriais/: Pasta com tutoriais passo a passo
+- exemplos_aula.md: Ideias de atividades para sala de aula
+
+📚 Conteúdo recomendado para o Guia do Educador:
+
+1. Introdução ao Projection Mapping
+2. Instalação e primeiros passos
+3. Interface do MappEduc
+4. Trabalhando com camadas
+5. Deformação e ajustes finos
+6. Usando o Chroma Key
+7. Salvando e compartilhando projetos
+8. Exemplos práticos por disciplina
+9. Dicas para apresentações ao vivo
+10. Solução de problemas comuns
+
+🎓 O MappEduc é uma ferramenta livre - sinta-se à vontade
+para criar e compartilhar seus próprios materiais didáticos!

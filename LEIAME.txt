@@ -1,0 +1,20 @@
+IMAGENS DE EXEMPLO - MAPPEDUC v2.3
+==================================
+
+Esta pasta contém imagens de exemplo para você testar o MappEduc.
+
+Imagens sugeridas:
+- grade_teste.png: Padrão de grade para calibrar a projeção
+- logo_mappeduc.png: Logo do programa com transparência
+- imagem_com_fundo.jpg: Para testar o Chroma Key
+
+Formatos suportados: JPG, JPEG, PNG, BMP
+
+✨ Novidade v2.3 - Chroma Key:
+- Remova cores específicas (preto, branco, verde, azul, vermelho)
+- Ajuste a tolerância para efeitos precisos
+- Ideal para remover fundos ou criar recortes
+
+Dica: PNGs com transparência nativa também são suportados!
+
+Você pode adicionar suas próprias imagens através do programa.

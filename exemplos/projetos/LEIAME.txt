@@ -1,0 +1,24 @@
+PROJETOS DE EXEMPLO - MAPPEDUC v2.3
+====================================
+
+Esta pasta contém projetos salvos (.mep) para você aprender.
+
+Projetos sugeridos:
+- tutorial_basico.mep: Projeto simples demonstrando conceitos básicos
+- exemplo_chroma.mep: Demonstração do Chroma Key
+
+Como usar:
+1. Abra o MappEduc
+2. Clique em "📂 Abrir Projeto"
+3. Navegue até esta pasta
+4. Selecione o arquivo .mep
+
+O arquivo .mep contém:
+- Posição de todas as camadas
+- Deformações (pontos de controle)
+- Configurações de opacidade
+- Configurações de Chroma Key
+- Caminhos dos arquivos de mídia
+
+⚠️ Atenção: Os arquivos de mídia originais precisam estar
+no mesmo local (caminho relativo) para o projeto funcionar.

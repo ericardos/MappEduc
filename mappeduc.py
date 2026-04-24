@@ -26,7 +26,7 @@ MAX_TEXTURE = 512
 VIDEO_UPDATE_MS = 50
 
 PROGRAM_NAME = "MappEduc"
-PROGRAM_VERSION = "2.3"
+PROGRAM_VERSION = "2.4"
 PROGRAM_AUTHOR = "Edson Ricardo dos Santos da Silva"
 PROGRAM_AUTHOR_TITLE = "Professor de Artes Visuais"
 PROGRAM_LICENSE = "GNU General Public License v3.0"
@@ -146,7 +146,8 @@ class UndoManager:
                 state.append({
                     'points': layer.points.copy(),
                     'grid': layer.grid,
-                    'opacity': layer.opacity
+                    'opacity': layer.opacity,
+                    'rotation': layer.rotation
                 })
         if state:
             self.undo_stack.append(state)
@@ -175,10 +176,11 @@ class UndoManager:
                 layer.points = s['points'].copy()
                 layer.grid = s['grid']
                 layer.opacity = s['opacity']
+                layer.rotation = s.get('rotation', 0.0)
 
 
 # =============================================================================
-# CAMADA (LAYER) - COM MÁSCARA POR COR-CHAVE (CHROMA KEY)
+# CAMADA (LAYER)
 # =============================================================================
 class Layer:
     def __init__(self, path):
@@ -194,6 +196,7 @@ class Layer:
         self.locked = False
         self.opacity = 1.0
         self.fit_mode = True
+        self.rotation = 0.0
         self._last_update = 0
         self._frame_counter = 0
         self._needs_texture_update = True
@@ -251,7 +254,6 @@ class Layer:
         if not self.chroma_enabled:
             return frame.copy()
         
-        # Converter para RGB para comparação
         if len(frame.shape) == 3 and frame.shape[2] == 3:
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         elif len(frame.shape) == 3 and frame.shape[2] == 4:
@@ -267,7 +269,6 @@ class Layer:
         
         mask = cv2.inRange(frame_rgb, lower, upper)
         
-        # Adicionar canal alpha
         if len(frame.shape) == 3 and frame.shape[2] == 3:
             result = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA)
         else:
@@ -275,7 +276,6 @@ class Layer:
             if result.shape[2] == 3:
                 result = cv2.cvtColor(result, cv2.COLOR_BGR2BGRA)
         
-        # Inverter máscara: 255 = opaco, 0 = transparente
         result[:, :, 3] = cv2.bitwise_not(mask)
         self.has_alpha = True
         
@@ -331,6 +331,7 @@ class Layer:
         if self.frame is not None:
             h, w = self.frame.shape[:2]
             self.points = self.create_grid(w, h, self.grid)
+            self.rotation = 0.0
 
     def update(self):
         if not self.is_video or not self.visible:
@@ -477,9 +478,8 @@ class GLView(QOpenGLWidget):
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glEnable(GL_TEXTURE_2D)
         
-        layers_sorted = sorted(self.layers, key=lambda l: l.has_alpha)
-        
-        for layer in layers_sorted:
+        # Renderizar na ordem inversa: última da lista = fundo, primeira = frente
+        for layer in reversed(self.layers):
             if not layer.visible or layer.frame is None:
                 continue
             
@@ -553,6 +553,9 @@ class GLView(QOpenGLWidget):
                 if layer.chroma_enabled:
                     y_pos += 20
                     painter.drawText(10, y_pos, f"🎭 Chroma Key ativo")
+                if layer.rotation != 0:
+                    y_pos += 20
+                    painter.drawText(10, y_pos, f"🔄 Rotação: {layer.rotation:.0f}°")
         
         painter.end()
 
@@ -786,6 +789,73 @@ class GLView(QOpenGLWidget):
             self.main_window.view_proj.update()
             self.main_window.statusBar().showMessage("📏 Escala resetada", 1500)
 
+    def _rotate_layer(self, degrees):
+        if not self.layers:
+            return
+        
+        layer = self.layers[self.active]
+        if layer.locked or not layer.visible:
+            return
+        
+        self.undo_manager.save_state(self.layers)
+        
+        layer.rotation += degrees
+        layer.rotation = layer.rotation % 360
+        
+        center_x = np.mean(layer.points[:, :, 0])
+        center_y = np.mean(layer.points[:, :, 1])
+        
+        rad = np.radians(degrees)
+        cos_a = np.cos(rad)
+        sin_a = np.sin(rad)
+        
+        for i in range(layer.points.shape[0]):
+            for j in range(layer.points.shape[1]):
+                dx = layer.points[i, j, 0] - center_x
+                dy = layer.points[i, j, 1] - center_y
+                layer.points[i, j, 0] = center_x + dx * cos_a - dy * sin_a
+                layer.points[i, j, 1] = center_y + dx * sin_a + dy * cos_a
+        
+        self.update()
+        if self.main_window:
+            self.main_window.view_proj.update()
+            self.main_window.statusBar().showMessage(f"🔄 Rotação: {layer.rotation:.0f}°", 1500)
+
+    def _reset_rotation(self):
+        if not self.layers:
+            return
+        
+        layer = self.layers[self.active]
+        if layer.locked or not layer.visible:
+            return
+        
+        if layer.rotation == 0:
+            return
+        
+        degrees = -layer.rotation
+        self.undo_manager.save_state(self.layers)
+        
+        center_x = np.mean(layer.points[:, :, 0])
+        center_y = np.mean(layer.points[:, :, 1])
+        
+        rad = np.radians(degrees)
+        cos_a = np.cos(rad)
+        sin_a = np.sin(rad)
+        
+        for i in range(layer.points.shape[0]):
+            for j in range(layer.points.shape[1]):
+                dx = layer.points[i, j, 0] - center_x
+                dy = layer.points[i, j, 1] - center_y
+                layer.points[i, j, 0] = center_x + dx * cos_a - dy * sin_a
+                layer.points[i, j, 1] = center_y + dx * sin_a + dy * cos_a
+        
+        layer.rotation = 0.0
+        
+        self.update()
+        if self.main_window:
+            self.main_window.view_proj.update()
+            self.main_window.statusBar().showMessage("🔄 Rotação resetada", 1500)
+
     def _move_selected_point(self, dx, dy):
         if not self.layers:
             return False
@@ -882,6 +952,16 @@ class GLView(QOpenGLWidget):
                 self._scale_layer(1.1)
             return
         
+        # ROTAÇÃO
+        if e.key() == QtCore.Qt.Key.Key_Q and not layer.locked and layer.visible:
+            if e.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
+                self._rotate_layer(-5)
+            elif e.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+                self._reset_rotation()
+            else:
+                self._rotate_layer(5)
+            return
+        
         # VISIBILIDADE
         if e.key() == QtCore.Qt.Key.Key_V:
             layer.visible = not layer.visible
@@ -974,7 +1054,8 @@ class LayerListItem(QtWidgets.QWidget):
         if self.layer.chroma_enabled:
             icon = "🎭"
         status = "🔒" if self.layer.locked else ""
-        self.label = ClickableLabel(f"{icon} {status} {os.path.basename(self.layer.path)}")
+        rot_text = f" {self.layer.rotation:.0f}°" if self.layer.rotation != 0 else ""
+        self.label = ClickableLabel(f"{icon}{rot_text} {status} {os.path.basename(self.layer.path)}")
         self.label.setStyleSheet("padding: 3px;")
         self.label.clicked.connect(self._select_layer)
         layout.addWidget(self.label, 1)
@@ -985,6 +1066,20 @@ class LayerListItem(QtWidgets.QWidget):
     
     def _show_context_menu(self, pos):
         menu = QtWidgets.QMenu()
+        
+        # Ordem
+        order_menu = menu.addMenu("📶 Ordem")
+        up_action = order_menu.addAction("⬆️ Mover para Frente")
+        up_action.triggered.connect(lambda: self.main_window._move_layer_up(self.index))
+        down_action = order_menu.addAction("⬇️ Mover para Trás")
+        down_action.triggered.connect(lambda: self.main_window._move_layer_down(self.index))
+        order_menu.addSeparator()
+        top_action = order_menu.addAction("⏫ Enviar para Frente de Tudo")
+        top_action.triggered.connect(lambda: self.main_window._move_layer_to_top(self.index))
+        bottom_action = order_menu.addAction("⏬ Enviar para Trás de Tudo")
+        bottom_action.triggered.connect(lambda: self.main_window._move_layer_to_bottom(self.index))
+        
+        menu.addSeparator()
         
         duplicate_action = menu.addAction("📋 Duplicar Camada")
         duplicate_action.triggered.connect(self._duplicate_layer)
@@ -1006,6 +1101,17 @@ class LayerListItem(QtWidgets.QWidget):
             enable_action.triggered.connect(self._enable_chroma_default)
             config_action = chroma_menu.addAction("⚙️ Configurar...")
             config_action.triggered.connect(self._configure_chroma)
+        
+        menu.addSeparator()
+        
+        # Rotação
+        rotate_menu = menu.addMenu("🔄 Rotação")
+        rotate_right = rotate_menu.addAction("↪️ Rotacionar +5°")
+        rotate_right.triggered.connect(lambda: self.main_window.view_edit._rotate_layer(5))
+        rotate_left = rotate_menu.addAction("↩️ Rotacionar -5°")
+        rotate_left.triggered.connect(lambda: self.main_window.view_edit._rotate_layer(-5))
+        rotate_reset = rotate_menu.addAction("🔄 Resetar Rotação")
+        rotate_reset.triggered.connect(lambda: self.main_window.view_edit._reset_rotation())
         
         menu.addSeparator()
         
@@ -1055,7 +1161,8 @@ class LayerListItem(QtWidgets.QWidget):
         if self.layer.chroma_enabled:
             icon = "🎭"
         status = "🔒" if self.layer.locked else ""
-        self.label.setText(f"{icon} {status} {os.path.basename(self.layer.path)}")
+        rot_text = f" {self.layer.rotation:.0f}°" if self.layer.rotation != 0 else ""
+        self.label.setText(f"{icon}{rot_text} {status} {os.path.basename(self.layer.path)}")
         self.update_style()
     
     def update_style(self):
@@ -1302,8 +1409,10 @@ class MainWindow(QtWidgets.QMainWindow):
         <p><b>{PROGRAM_AUTHOR}</b><br>{PROGRAM_AUTHOR_TITLE}</p>
         <h3>📜 Licença</h3>
         <p>{PROGRAM_COPYRIGHT}<br>{PROGRAM_LICENSE}</p>
-        <h3>✨ Novidade v{PROGRAM_VERSION}</h3>
+        <h3>✨ Novidades v{PROGRAM_VERSION}</h3>
         <ul>
+        <li>🔄 Rotação de camadas (Q)</li>
+        <li>📶 Reordenamento de camadas (Ctrl+↑↓)</li>
         <li>🎭 Chroma Key (máscara por cor)</li>
         </ul>
         """
@@ -1320,28 +1429,37 @@ class MainWindow(QtWidgets.QMainWindow):
         help_text = f"""
         <h2>🎓 {PROGRAM_NAME} - Guia do Educador</h2>
         
-        <h3>🎭 Chroma Key (Máscara por Cor)</h3>
+        <h3>🔄 Rotação</h3>
         <ul>
-        <li>Clique direito na camada → 🎭 Chroma Key → Configurar</li>
-        <li>Escolha uma cor (ex: preto, branco, verde)</li>
-        <li>Ajuste a tolerância</li>
-        <li>Áreas com a cor escolhida ficam transparentes!</li>
+        <li><b>Q</b> - Rotacionar +5° (horário)</li>
+        <li><b>Shift+Q</b> - Rotacionar -5° (anti-horário)</li>
+        <li><b>Ctrl+Q</b> - Resetar rotação</li>
         </ul>
         
-        <h3>⌨️ Atalhos de Teclado</h3>
+        <h3>📶 Ordem das Camadas (como Inkscape/GIMP)</h3>
+        <ul>
+        <li>Clique direito → 📶 Ordem</li>
+        <li><b>Ctrl+↑</b> - Mover para frente</li>
+        <li><b>Ctrl+↓</b> - Mover para trás</li>
+        <li><b>Ctrl+Shift+↑</b> - Enviar para frente de tudo</li>
+        <li><b>Ctrl+Shift+↓</b> - Enviar para trás de tudo</li>
+        <li>📌 Primeira camada da lista = frente visual</li>
+        <li>📌 Novas camadas são adicionadas no topo (frente)</li>
+        </ul>
+        
+        <h3>🎭 Chroma Key</h3>
+        <ul>
+        <li>Clique direito → 🎭 Chroma Key → Configurar</li>
+        </ul>
+        
+        <h3>⌨️ Outros Atalhos</h3>
         <ul>
         <li><b>V</b> - Mostrar/Esconder</li>
         <li><b>L</b> - Travar/Destravar</li>
         <li><b>R</b> - Resetar grid</li>
-        <li><b>F</b> - Modo Fit/Stretch</li>
         <li><b>S</b> - Aumentar escala</li>
-        <li><b>Shift+S</b> - Diminuir escala</li>
-        <li><b>Ctrl+S</b> - Resetar escala</li>
         <li><b>Ctrl+D</b> - Duplicar camada</li>
-        <li><b>+ / -</b> - Zoom in/out</li>
-        <li><b>0 ou Home</b> - Resetar visualização</li>
         <li><b>F11</b> - Tela cheia</li>
-        <li><b>Del</b> - Remover camada</li>
         <li><b>Ctrl+Z</b> - Desfazer</li>
         </ul>
         """
@@ -1353,6 +1471,82 @@ class MainWindow(QtWidgets.QMainWindow):
         msg.setTextFormat(QtCore.Qt.TextFormat.RichText)
         msg.setText(help_text)
         msg.exec()
+    
+    # ========================
+    # REORDENAMENTO DE CAMADAS
+    # ========================
+    
+    def _move_layer_up(self, index):
+        if index <= 0 or index >= len(self.layers):
+            return
+        
+        self.layers[index], self.layers[index-1] = self.layers[index-1], self.layers[index]
+        
+        item = self.layer_items.pop(index)
+        self.layer_items.insert(index - 1, item)
+        self.list_layout.removeWidget(item)
+        self.list_layout.insertWidget(index - 1, item)
+        
+        self._update_list_display()
+        self._select_layer_by_index(index - 1)
+        self._update_all()
+        self.statusBar().showMessage("⬆️ Camada movida para frente", 1000)
+    
+    def _move_layer_down(self, index):
+        if index < 0 or index >= len(self.layers) - 1:
+            return
+        
+        self.layers[index], self.layers[index+1] = self.layers[index+1], self.layers[index]
+        
+        item = self.layer_items.pop(index)
+        self.layer_items.insert(index + 1, item)
+        self.list_layout.removeWidget(item)
+        self.list_layout.insertWidget(index + 1, item)
+        
+        self._update_list_display()
+        self._select_layer_by_index(index + 1)
+        self._update_all()
+        self.statusBar().showMessage("⬇️ Camada movida para trás", 1000)
+    
+    def _move_layer_to_top(self, index):
+        if index <= 0 or index >= len(self.layers):
+            return
+        
+        layer = self.layers.pop(index)
+        self.layers.insert(0, layer)
+        
+        item = self.layer_items.pop(index)
+        self.layer_items.insert(0, item)
+        self.list_layout.removeWidget(item)
+        self.list_layout.insertWidget(0, item)
+        
+        self._update_list_display()
+        self._select_layer_by_index(0)
+        self._update_all()
+        self.statusBar().showMessage("⏫ Camada enviada para frente de tudo", 1000)
+    
+    def _move_layer_to_bottom(self, index):
+        if index < 0 or index >= len(self.layers) - 1:
+            return
+        
+        last_idx = len(self.layers) - 1
+        
+        layer = self.layers.pop(index)
+        self.layers.append(layer)
+        
+        item = self.layer_items.pop(index)
+        self.layer_items.append(item)
+        self.list_layout.removeWidget(item)
+        self.list_layout.insertWidget(last_idx, item)
+        
+        self._update_list_display()
+        self._select_layer_by_index(last_idx)
+        self._update_all()
+        self.statusBar().showMessage("⏬ Camada enviada para trás de tudo", 1000)
+    
+    # ========================
+    # DEMAIS FUNÇÕES
+    # ========================
     
     def _enable_chroma_key(self, index):
         if index < 0 or index >= len(self.layers):
@@ -1461,20 +1655,31 @@ class MainWindow(QtWidgets.QMainWindow):
         for path in paths:
             try:
                 layer = Layer(path)
-                self.layers.append(layer)
-                self._add_layer_item(layer)
+                # NOVO: Inserir no início da lista (topo = frente visual)
+                self.layers.insert(0, layer)
+                self._add_layer_item_at_index(layer, 0)
             except Exception as e:
                 QtWidgets.QMessageBox.warning(self, "Erro", str(e))
         
         if self.layers:
-            self._select_layer_by_index(len(self.layers)-1)
+            self._select_layer_by_index(0)  # Selecionar o primeiro (recém-adicionado)
             self._update_all()
     
     def _add_layer_item(self, layer):
+        """Adiciona item de camada ao final da lista (fundo visual)"""
         index = len(self.layer_items)
+        self._add_layer_item_at_index(layer, index)
+    
+    def _add_layer_item_at_index(self, layer, index):
+        """Adiciona item de camada em uma posição específica"""
         item = LayerListItem(layer, self, index)
-        self.layer_items.append(item)
-        self.list_layout.insertWidget(self.list_layout.count() - 1, item)
+        self.layer_items.insert(index, item)
+        self.list_layout.insertWidget(index, item)
+        
+        # Atualizar índices de todos os itens após a inserção
+        for i, item in enumerate(self.layer_items):
+            item.index = i
+        
         item.update_display()
     
     def _update_list_display(self):
@@ -1521,15 +1726,18 @@ class MainWindow(QtWidgets.QMainWindow):
             new_layer.visible = original.visible
             new_layer.locked = False
             new_layer.fit_mode = original.fit_mode
+            new_layer.rotation = original.rotation
             
             new_layer.chroma_enabled = original.chroma_enabled
             new_layer.chroma_color = original.chroma_color
             new_layer.chroma_tolerance = original.chroma_tolerance
             new_layer._process_frame()
             
-            self.layers.append(new_layer)
-            self._add_layer_item(new_layer)
-            self._select_layer_by_index(len(self.layers)-1)
+            # Inserir duplicata após a original (índice + 1)
+            insert_idx = index + 1
+            self.layers.insert(insert_idx, new_layer)
+            self._add_layer_item_at_index(new_layer, insert_idx)
+            self._select_layer_by_index(insert_idx)
             self._update_all()
             
             self.statusBar().showMessage(f"📋 Camada duplicada: {os.path.basename(new_layer.path)}", 2000)
@@ -1557,6 +1765,7 @@ class MainWindow(QtWidgets.QMainWindow):
             old_opacity = layer.opacity
             old_visible = layer.visible
             old_fit_mode = layer.fit_mode
+            old_rotation = layer.rotation
             old_chroma_enabled = layer.chroma_enabled
             old_chroma_color = layer.chroma_color
             old_chroma_tolerance = layer.chroma_tolerance
@@ -1576,6 +1785,7 @@ class MainWindow(QtWidgets.QMainWindow):
             layer.opacity = old_opacity
             layer.visible = old_visible
             layer.fit_mode = old_fit_mode
+            layer.rotation = old_rotation
             layer.chroma_enabled = old_chroma_enabled
             layer.chroma_color = old_chroma_color
             layer.chroma_tolerance = old_chroma_tolerance
@@ -1726,6 +1936,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 'visible': layer.visible,
                 'locked': layer.locked,
                 'fit_mode': layer.fit_mode,
+                'rotation': layer.rotation,
                 'chroma_enabled': layer.chroma_enabled,
                 'chroma_color': layer.chroma_color,
                 'chroma_tolerance': layer.chroma_tolerance
@@ -1783,6 +1994,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     layer.visible = ld.get('visible', True)
                     layer.locked = ld.get('locked', False)
                     layer.fit_mode = ld.get('fit_mode', True)
+                    layer.rotation = ld.get('rotation', 0.0)
                     layer.chroma_enabled = ld.get('chroma_enabled', False)
                     layer.chroma_color = tuple(ld.get('chroma_color', (0, 0, 0)))
                     layer.chroma_tolerance = ld.get('chroma_tolerance', 30)
@@ -1810,17 +2022,38 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_proj.update()
     
     def keyPressEvent(self, event):
+        # Atalhos que devem funcionar mesmo sem camadas
         if event.key() == QtCore.Qt.Key.Key_F11:
             self._toggle_fullscreen()
+            return
         elif event.key() == QtCore.Qt.Key.Key_F1:
             self._show_help()
+            return
         elif event.key() == QtCore.Qt.Key.Key_Escape:
             self._deselect_point()
-        elif event.key() == QtCore.Qt.Key.Key_D and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
-            if self.layers:
+            return
+        
+        # Atalhos que precisam de camadas
+        if self.layers:
+            if event.key() == QtCore.Qt.Key.Key_D and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
                 self._duplicate_layer(self.view_edit.active)
-        else:
-            self.view_edit.keyPressEvent(event)
+                return
+            # Reordenamento de camadas
+            elif event.key() == QtCore.Qt.Key.Key_Up and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+                if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
+                    self._move_layer_to_top(self.view_edit.active)
+                else:
+                    self._move_layer_up(self.view_edit.active)
+                return
+            elif event.key() == QtCore.Qt.Key.Key_Down and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+                if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
+                    self._move_layer_to_bottom(self.view_edit.active)
+                else:
+                    self._move_layer_down(self.view_edit.active)
+                return
+        
+        # Se não for nenhum atalho da MainWindow, passa para a GLView
+        self.view_edit.keyPressEvent(event)
     
     def closeEvent(self, event):
         self._save_settings()

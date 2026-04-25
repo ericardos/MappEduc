@@ -20,13 +20,14 @@ from datetime import datetime
 # =============================================================================
 # CONFIGURAÇÕES
 # =============================================================================
-DEFAULT_GRID = 1
+DEFAULT_GRID_COLS = 1
+DEFAULT_GRID_ROWS = 1
 SUBDIV = 4
 MAX_TEXTURE = 512
 VIDEO_UPDATE_MS = 50
 
 PROGRAM_NAME = "MappEduc"
-PROGRAM_VERSION = "2.4"
+PROGRAM_VERSION = "2.6"
 PROGRAM_AUTHOR = "Edson Ricardo dos Santos da Silva"
 PROGRAM_AUTHOR_TITLE = "Professor de Artes Visuais"
 PROGRAM_LICENSE = "GNU General Public License v3.0"
@@ -145,7 +146,8 @@ class UndoManager:
             if layer.frame is not None:
                 state.append({
                     'points': layer.points.copy(),
-                    'grid': layer.grid,
+                    'grid_cols': layer.grid_cols,
+                    'grid_rows': layer.grid_rows,
                     'opacity': layer.opacity,
                     'rotation': layer.rotation
                 })
@@ -174,7 +176,8 @@ class UndoManager:
         for layer, s in zip(layers, state):
             if layer.frame is not None:
                 layer.points = s['points'].copy()
-                layer.grid = s['grid']
+                layer.grid_cols = s['grid_cols']
+                layer.grid_rows = s['grid_rows']
                 layer.opacity = s['opacity']
                 layer.rotation = s.get('rotation', 0.0)
 
@@ -202,6 +205,9 @@ class Layer:
         self._needs_texture_update = True
         self.has_alpha = False
         
+        self.grid_cols = DEFAULT_GRID_COLS
+        self.grid_rows = DEFAULT_GRID_ROWS
+        
         # Chroma Key
         self.chroma_enabled = False
         self.chroma_color = (0, 0, 0)
@@ -223,8 +229,7 @@ class Layer:
 
         self._process_frame()
         h, w = self.frame.shape[:2]
-        self.grid = DEFAULT_GRID
-        self.points = self.create_grid(w, h, self.grid)
+        self.points = self.create_grid(w, h, self.grid_cols, self.grid_rows)
 
     def _load_video(self, path):
         self.is_video = True
@@ -305,7 +310,7 @@ class Layer:
         self._process_frame()
         self._needs_texture_update = True
 
-    def create_grid(self, w, h, g):
+    def create_grid(self, w, h, cols, rows):
         if self.fit_mode:
             if w > h:
                 scale_x = 1.0
@@ -317,12 +322,12 @@ class Layer:
             scale_x = 1.0
             scale_y = 1.0
         
-        pts = np.zeros((g+1, g+1, 2), dtype=np.float32)
-        for y in range(g+1):
-            py = y / g
+        pts = np.zeros((rows + 1, cols + 1, 2), dtype=np.float32)
+        for y in range(rows + 1):
+            py = y / rows if rows > 0 else 0
             ny = (py * 2 - 1) * scale_y
-            for x in range(g+1):
-                px = x / g
+            for x in range(cols + 1):
+                px = x / cols if cols > 0 else 0
                 nx = (px * 2 - 1) * scale_x
                 pts[y, x] = [nx, -ny]
         return pts
@@ -330,8 +335,13 @@ class Layer:
     def rebuild_grid(self):
         if self.frame is not None:
             h, w = self.frame.shape[:2]
-            self.points = self.create_grid(w, h, self.grid)
+            self.points = self.create_grid(w, h, self.grid_cols, self.grid_rows)
             self.rotation = 0.0
+
+    def set_grid(self, cols, rows):
+        self.grid_cols = cols
+        self.grid_rows = rows
+        self.rebuild_grid()
 
     def update(self):
         if not self.is_video or not self.visible:
@@ -381,6 +391,7 @@ class GLView(QOpenGLWidget):
         self.active = 0
         self.selected = None
         self.is_edit_view = (view_type == "edit")
+        self.show_grid_in_proj = False  # NOVO: Flag para mostrar grid na projeção
         self.undo_manager = UndoManager()
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         self._initialized = False
@@ -494,10 +505,11 @@ class GLView(QOpenGLWidget):
             glColor4f(1.0, 1.0, 1.0, layer.opacity)
             
             p = layer.points
-            g = layer.grid
+            cols = layer.grid_cols
+            rows = layer.grid_rows
             
-            for i in range(g):
-                for j in range(g):
+            for i in range(rows):
+                for j in range(cols):
                     p00, p10 = p[i][j], p[i][j+1]
                     p01, p11 = p[i+1][j], p[i+1][j+1]
                     
@@ -506,24 +518,58 @@ class GLView(QOpenGLWidget):
                     for k in range(SUBDIV+1):
                         u = k * step
                         u1 = 1-u
-                        tx = (j+u)/g
+                        tx = (j+u)/cols
                         
                         x0 = u1*p00[0] + u*p10[0]
                         y0 = u1*p00[1] + u*p10[1]
                         x1 = u1*p01[0] + u*p11[0]
                         y1 = u1*p01[1] + u*p11[1]
                         
-                        glTexCoord2f(tx, i/g)
+                        glTexCoord2f(tx, i/rows)
                         glVertex2f(x0, y0)
-                        glTexCoord2f(tx, (i+1)/g)
+                        glTexCoord2f(tx, (i+1)/rows)
                         glVertex2f(x1, y1)
                     glEnd()
+        
+        # NOVO: Desenhar grid na projeção (apenas linhas, sem pontos)
+        if self.view_type == "proj" and self.show_grid_in_proj and self.layers:
+            layer = self.layers[self.active]
+            if layer.visible:
+                self._draw_proj_grid(layer)
         
         if self.is_edit_view:
             self._draw_overlay()
             self._draw_info()
         
         glFlush()
+
+    def _draw_proj_grid(self, layer):
+        """Desenha apenas as linhas do grid na janela de projeção (sem pontos)"""
+        glDisable(GL_TEXTURE_2D)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        
+        cols = layer.grid_cols
+        rows = layer.grid_rows
+        
+        # Linhas ciano bem visíveis e mais grossas
+        glColor4f(0.0, 1.0, 1.0, 0.9)  # Ciano brilhante
+        glLineWidth(3.0)  # Linhas mais grossas para projeção
+        
+        glBegin(GL_LINES)
+        # Linhas horizontais
+        for i in range(rows + 1):
+            for j in range(cols):
+                glVertex2f(*layer.points[i][j])
+                glVertex2f(*layer.points[i][j+1])
+        # Linhas verticais
+        for j in range(cols + 1):
+            for i in range(rows):
+                glVertex2f(*layer.points[i][j])
+                glVertex2f(*layer.points[i+1][j])
+        glEnd()
+        
+        glEnable(GL_TEXTURE_2D)
 
     def _draw_info(self):
         painter = QtGui.QPainter(self)
@@ -572,15 +618,16 @@ class GLView(QOpenGLWidget):
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glLineWidth(2.0)
         
-        h, w = layer.points.shape[:2]
+        cols = layer.grid_cols
+        rows = layer.grid_rows
         
-        for i in range(h):
-            for j in range(w):
+        for i in range(rows + 1):
+            for j in range(cols + 1):
                 x, y = layer.points[i][j]
                 
                 if layer.locked:
                     glColor3f(1.0, 0.0, 0.0)
-                elif i == 0 or i == h-1 or j == 0 or j == w-1:
+                elif i == 0 or i == rows or j == 0 or j == cols:
                     glColor3f(1.0, 0.5, 0.0)
                 else:
                     glColor3f(0.0, 0.8, 0.0)
@@ -593,12 +640,12 @@ class GLView(QOpenGLWidget):
         
         glColor4f(0.0, 0.8, 1.0, 0.8)
         glBegin(GL_LINES)
-        for i in range(h):
-            for j in range(w-1):
+        for i in range(rows + 1):
+            for j in range(cols):
                 glVertex2f(*layer.points[i][j])
                 glVertex2f(*layer.points[i][j+1])
-        for j in range(w):
-            for i in range(h-1):
+        for j in range(cols + 1):
+            for i in range(rows):
                 glVertex2f(*layer.points[i][j])
                 glVertex2f(*layer.points[i+1][j])
         glEnd()
@@ -1009,7 +1056,7 @@ class GLView(QOpenGLWidget):
                 self.update()
                 if self.main_window:
                     self.main_window.view_proj.update()
-                    self.main_window._update_grid_slider()
+                    self.main_window._update_grid_sliders()
             return
                     
         # FIT MODE
@@ -1055,7 +1102,8 @@ class LayerListItem(QtWidgets.QWidget):
             icon = "🎭"
         status = "🔒" if self.layer.locked else ""
         rot_text = f" {self.layer.rotation:.0f}°" if self.layer.rotation != 0 else ""
-        self.label = ClickableLabel(f"{icon}{rot_text} {status} {os.path.basename(self.layer.path)}")
+        grid_text = f" [{self.layer.grid_cols}x{self.layer.grid_rows}]" if self.layer.grid_cols != 1 or self.layer.grid_rows != 1 else ""
+        self.label = ClickableLabel(f"{icon}{rot_text}{grid_text} {status} {os.path.basename(self.layer.path)}")
         self.label.setStyleSheet("padding: 3px;")
         self.label.clicked.connect(self._select_layer)
         layout.addWidget(self.label, 1)
@@ -1067,7 +1115,6 @@ class LayerListItem(QtWidgets.QWidget):
     def _show_context_menu(self, pos):
         menu = QtWidgets.QMenu()
         
-        # Ordem
         order_menu = menu.addMenu("📶 Ordem")
         up_action = order_menu.addAction("⬆️ Mover para Frente")
         up_action.triggered.connect(lambda: self.main_window._move_layer_up(self.index))
@@ -1089,7 +1136,6 @@ class LayerListItem(QtWidgets.QWidget):
         
         menu.addSeparator()
         
-        # Chroma Key
         chroma_menu = menu.addMenu("🎭 Chroma Key")
         if self.layer.chroma_enabled:
             config_action = chroma_menu.addAction("⚙️ Configurar...")
@@ -1104,7 +1150,6 @@ class LayerListItem(QtWidgets.QWidget):
         
         menu.addSeparator()
         
-        # Rotação
         rotate_menu = menu.addMenu("🔄 Rotação")
         rotate_right = rotate_menu.addAction("↪️ Rotacionar +5°")
         rotate_right.triggered.connect(lambda: self.main_window.view_edit._rotate_layer(5))
@@ -1162,7 +1207,8 @@ class LayerListItem(QtWidgets.QWidget):
             icon = "🎭"
         status = "🔒" if self.layer.locked else ""
         rot_text = f" {self.layer.rotation:.0f}°" if self.layer.rotation != 0 else ""
-        self.label.setText(f"{icon}{rot_text} {status} {os.path.basename(self.layer.path)}")
+        grid_text = f" [{self.layer.grid_cols}x{self.layer.grid_rows}]" if self.layer.grid_cols != 1 or self.layer.grid_rows != 1 else ""
+        self.label.setText(f"{icon}{rot_text}{grid_text} {status} {os.path.basename(self.layer.path)}")
         self.update_style()
     
     def update_style(self):
@@ -1303,11 +1349,22 @@ class MainWindow(QtWidgets.QMainWindow):
         btn_deselect = QtWidgets.QPushButton("📍 Deselecionar (ESC)")
         btn_deselect.clicked.connect(self._deselect_point)
         
-        self.grid_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-        self.grid_slider.setMinimum(1)
-        self.grid_slider.setMaximum(6)
-        self.grid_slider.setValue(1)
-        self.grid_slider.valueChanged.connect(self._change_grid)
+        # NOVO: Checkbox para mostrar grid na projeção
+        self.show_grid_cb = QtWidgets.QCheckBox("☑ Mostrar Grid na Projeção")
+        self.show_grid_cb.setChecked(False)
+        self.show_grid_cb.toggled.connect(self._toggle_proj_grid)
+        
+        self.cols_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.cols_slider.setMinimum(1)
+        self.cols_slider.setMaximum(8)
+        self.cols_slider.setValue(1)
+        self.cols_slider.valueChanged.connect(self._change_grid)
+        
+        self.rows_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self.rows_slider.setMinimum(1)
+        self.rows_slider.setMaximum(8)
+        self.rows_slider.setValue(1)
+        self.rows_slider.valueChanged.connect(self._change_grid)
         
         self.opacity_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self.opacity_slider.setMinimum(0)
@@ -1315,9 +1372,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.opacity_slider.setValue(100)
         self.opacity_slider.valueChanged.connect(self._change_opacity)
         
-        self.lbl_grid_value = QtWidgets.QLabel("1x1")
-        self.grid_slider.valueChanged.connect(lambda v: self.lbl_grid_value.setText(f"{v}x{v}"))
+        self.lbl_cols_value = QtWidgets.QLabel("1")
+        self.cols_slider.valueChanged.connect(lambda v: self.lbl_cols_value.setText(str(v)))
         
+        self.lbl_rows_value = QtWidgets.QLabel("1")
+        self.rows_slider.valueChanged.connect(lambda v: self.lbl_rows_value.setText(str(v)))
+        
+        self.lbl_grid_full = QtWidgets.QLabel("Malha: 1x1")
         self.lbl_opacity_value = QtWidgets.QLabel("100%")
         self.opacity_slider.valueChanged.connect(lambda v: self.lbl_opacity_value.setText(f"{v}%"))
         
@@ -1337,11 +1398,19 @@ class MainWindow(QtWidgets.QMainWindow):
         
         side.addWidget(QtWidgets.QLabel("⚙️ CONTROLES"))
         
-        grid_layout = QtWidgets.QHBoxLayout()
-        grid_layout.addWidget(QtWidgets.QLabel("Malha:"))
-        grid_layout.addWidget(self.lbl_grid_value)
-        side.addLayout(grid_layout)
-        side.addWidget(self.grid_slider)
+        cols_layout = QtWidgets.QHBoxLayout()
+        cols_layout.addWidget(QtWidgets.QLabel("Colunas:"))
+        cols_layout.addWidget(self.lbl_cols_value)
+        side.addLayout(cols_layout)
+        side.addWidget(self.cols_slider)
+        
+        rows_layout = QtWidgets.QHBoxLayout()
+        rows_layout.addWidget(QtWidgets.QLabel("Linhas:"))
+        rows_layout.addWidget(self.lbl_rows_value)
+        side.addLayout(rows_layout)
+        side.addWidget(self.rows_slider)
+        
+        side.addWidget(self.lbl_grid_full)
         
         opacity_layout = QtWidgets.QHBoxLayout()
         opacity_layout.addWidget(QtWidgets.QLabel("Opacidade:"))
@@ -1351,6 +1420,7 @@ class MainWindow(QtWidgets.QMainWindow):
         side.addWidget(QHLine())
         
         side.addWidget(QtWidgets.QLabel("🖼️ VISUALIZAÇÃO"))
+        side.addWidget(self.show_grid_cb)  # NOVO: Checkbox do grid
         side.addWidget(btn_reset_view)
         side.addWidget(btn_deselect)
         side.addWidget(QHLine())
@@ -1395,6 +1465,15 @@ class MainWindow(QtWidgets.QMainWindow):
         
         self.setCentralWidget(central)
     
+    def _toggle_proj_grid(self, checked):
+        """Ativa/desativa a exibição do grid na janela de projeção"""
+        self.view_proj.show_grid_in_proj = checked
+        self.view_proj.update()
+        if checked:
+            self.statusBar().showMessage("📐 Grid exibido na projeção", 1500)
+        else:
+            self.statusBar().showMessage("📐 Grid oculto na projeção", 1500)
+    
     def _deselect_point(self):
         self.view_edit.selected = None
         self.view_edit.update()
@@ -1411,6 +1490,8 @@ class MainWindow(QtWidgets.QMainWindow):
         <p>{PROGRAM_COPYRIGHT}<br>{PROGRAM_LICENSE}</p>
         <h3>✨ Novidades v{PROGRAM_VERSION}</h3>
         <ul>
+        <li>📐 Grid visível na projeção (linhas ciano)</li>
+        <li>📐 Malha assimétrica (colunas ≠ linhas)</li>
         <li>🔄 Rotação de camadas (Q)</li>
         <li>📶 Reordenamento de camadas (Ctrl+↑↓)</li>
         <li>🎭 Chroma Key (máscara por cor)</li>
@@ -1429,36 +1510,28 @@ class MainWindow(QtWidgets.QMainWindow):
         help_text = f"""
         <h2>🎓 {PROGRAM_NAME} - Guia do Educador</h2>
         
-        <h3>🔄 Rotação</h3>
+        <h3>📐 Grid na Projeção (v{PROGRAM_VERSION})</h3>
         <ul>
-        <li><b>Q</b> - Rotacionar +5° (horário)</li>
-        <li><b>Shift+Q</b> - Rotacionar -5° (anti-horário)</li>
-        <li><b>Ctrl+Q</b> - Resetar rotação</li>
+        <li>Checkbox <b>"Mostrar Grid na Projeção"</b></li>
+        <li>Exibe linhas ciano na janela de projeção</li>
+        <li>Ajuda a calibrar a deformação na superfície real</li>
         </ul>
         
-        <h3>📶 Ordem das Camadas (como Inkscape/GIMP)</h3>
+        <h3>📐 Malha Assimétrica</h3>
         <ul>
-        <li>Clique direito → 📶 Ordem</li>
-        <li><b>Ctrl+↑</b> - Mover para frente</li>
-        <li><b>Ctrl+↓</b> - Mover para trás</li>
-        <li><b>Ctrl+Shift+↑</b> - Enviar para frente de tudo</li>
-        <li><b>Ctrl+Shift+↓</b> - Enviar para trás de tudo</li>
-        <li>📌 Primeira camada da lista = frente visual</li>
-        <li>📌 Novas camadas são adicionadas no topo (frente)</li>
+        <li>Sliders independentes para <b>Colunas</b> e <b>Linhas</b></li>
+        <li>Ex: 6 colunas x 1 linha, 2 colunas x 5 linhas</li>
         </ul>
         
-        <h3>🎭 Chroma Key</h3>
+        <h3>⌨️ Atalhos</h3>
         <ul>
-        <li>Clique direito → 🎭 Chroma Key → Configurar</li>
-        </ul>
-        
-        <h3>⌨️ Outros Atalhos</h3>
-        <ul>
-        <li><b>V</b> - Mostrar/Esconder</li>
+        <li><b>Q</b> - Rotação +5°</li>
+        <li><b>Ctrl+↑↓</b> - Reordenar camadas</li>
+        <li><b>V</b> - Visível/Invisível</li>
         <li><b>L</b> - Travar/Destravar</li>
         <li><b>R</b> - Resetar grid</li>
-        <li><b>S</b> - Aumentar escala</li>
-        <li><b>Ctrl+D</b> - Duplicar camada</li>
+        <li><b>S</b> - Escala</li>
+        <li><b>Ctrl+D</b> - Duplicar</li>
         <li><b>F11</b> - Tela cheia</li>
         <li><b>Ctrl+Z</b> - Desfazer</li>
         </ul>
@@ -1471,10 +1544,6 @@ class MainWindow(QtWidgets.QMainWindow):
         msg.setTextFormat(QtCore.Qt.TextFormat.RichText)
         msg.setText(help_text)
         msg.exec()
-    
-    # ========================
-    # REORDENAMENTO DE CAMADAS
-    # ========================
     
     def _move_layer_up(self, index):
         if index <= 0 or index >= len(self.layers):
@@ -1543,10 +1612,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._select_layer_by_index(last_idx)
         self._update_all()
         self.statusBar().showMessage("⏬ Camada enviada para trás de tudo", 1000)
-    
-    # ========================
-    # DEMAIS FUNÇÕES
-    # ========================
     
     def _enable_chroma_key(self, index):
         if index < 0 or index >= len(self.layers):
@@ -1655,28 +1720,24 @@ class MainWindow(QtWidgets.QMainWindow):
         for path in paths:
             try:
                 layer = Layer(path)
-                # NOVO: Inserir no início da lista (topo = frente visual)
                 self.layers.insert(0, layer)
                 self._add_layer_item_at_index(layer, 0)
             except Exception as e:
                 QtWidgets.QMessageBox.warning(self, "Erro", str(e))
         
         if self.layers:
-            self._select_layer_by_index(0)  # Selecionar o primeiro (recém-adicionado)
+            self._select_layer_by_index(0)
             self._update_all()
     
     def _add_layer_item(self, layer):
-        """Adiciona item de camada ao final da lista (fundo visual)"""
         index = len(self.layer_items)
         self._add_layer_item_at_index(layer, index)
     
     def _add_layer_item_at_index(self, layer, index):
-        """Adiciona item de camada em uma posição específica"""
         item = LayerListItem(layer, self, index)
         self.layer_items.insert(index, item)
         self.list_layout.insertWidget(index, item)
         
-        # Atualizar índices de todos os itens após a inserção
         for i, item in enumerate(self.layer_items):
             item.index = i
         
@@ -1687,26 +1748,41 @@ class MainWindow(QtWidgets.QMainWindow):
             item.index = i
             item.update_display()
     
+    def _update_grid_sliders(self):
+        if not self.layers:
+            return
+        layer = self.layers[self.view_edit.active]
+        self.cols_slider.blockSignals(True)
+        self.rows_slider.blockSignals(True)
+        self.cols_slider.setValue(layer.grid_cols)
+        self.rows_slider.setValue(layer.grid_rows)
+        self.cols_slider.blockSignals(False)
+        self.rows_slider.blockSignals(False)
+        self.lbl_grid_full.setText(f"Malha: {layer.grid_cols}x{layer.grid_rows}")
+    
     def _select_layer_by_index(self, i):
         if i >= 0 and i < len(self.layers):
             self.view_edit.active = i
             self.view_proj.active = i
             layer = self.layers[i]
             
-            self.grid_slider.blockSignals(True)
+            self.cols_slider.blockSignals(True)
+            self.rows_slider.blockSignals(True)
             self.opacity_slider.blockSignals(True)
             self.btn_fit.blockSignals(True)
             
-            self.grid_slider.setValue(layer.grid)
+            self.cols_slider.setValue(layer.grid_cols)
+            self.rows_slider.setValue(layer.grid_rows)
             self.opacity_slider.setValue(int(layer.opacity*100))
             self.btn_fit.setChecked(layer.fit_mode)
             
-            self.grid_slider.blockSignals(False)
+            self.cols_slider.blockSignals(False)
+            self.rows_slider.blockSignals(False)
             self.opacity_slider.blockSignals(False)
             self.btn_fit.blockSignals(False)
             
             self._update_lock_button()
-            self.lbl_grid_value.setText(f"{layer.grid}x{layer.grid}")
+            self.lbl_grid_full.setText(f"Malha: {layer.grid_cols}x{layer.grid_rows}")
             self.lbl_opacity_value.setText(f"{int(layer.opacity*100)}%")
             
             self._update_list_display()
@@ -1721,7 +1797,8 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             new_layer = Layer(original.path)
             new_layer.points = original.points.copy()
-            new_layer.grid = original.grid
+            new_layer.grid_cols = original.grid_cols
+            new_layer.grid_rows = original.grid_rows
             new_layer.opacity = original.opacity
             new_layer.visible = original.visible
             new_layer.locked = False
@@ -1733,7 +1810,6 @@ class MainWindow(QtWidgets.QMainWindow):
             new_layer.chroma_tolerance = original.chroma_tolerance
             new_layer._process_frame()
             
-            # Inserir duplicata após a original (índice + 1)
             insert_idx = index + 1
             self.layers.insert(insert_idx, new_layer)
             self._add_layer_item_at_index(new_layer, insert_idx)
@@ -1761,7 +1837,8 @@ class MainWindow(QtWidgets.QMainWindow):
         
         try:
             old_points = layer.points.copy()
-            old_grid = layer.grid
+            old_grid_cols = layer.grid_cols
+            old_grid_rows = layer.grid_rows
             old_opacity = layer.opacity
             old_visible = layer.visible
             old_fit_mode = layer.fit_mode
@@ -1781,7 +1858,8 @@ class MainWindow(QtWidgets.QMainWindow):
             layer.__init__(path)
             
             layer.points = old_points
-            layer.grid = old_grid
+            layer.grid_cols = old_grid_cols
+            layer.grid_rows = old_grid_rows
             layer.opacity = old_opacity
             layer.visible = old_visible
             layer.fit_mode = old_fit_mode
@@ -1852,12 +1930,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_lock.setChecked(layer.locked)
         self.btn_lock.setText("🔒 Travado" if layer.locked else "🔓 Destravar")
     
-    def _update_grid_slider(self):
-        if not self.layers:
-            return
-        layer = self.layers[self.view_edit.active]
-        self.grid_slider.setValue(layer.grid)
-    
     def _toggle_lock(self, checked):
         if not self.layers:
             return
@@ -1867,15 +1939,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_list_display()
         self.view_edit.update()
     
-    def _change_grid(self, v):
+    def _change_grid(self):
         if not self.layers:
             return
         layer = self.layers[self.view_edit.active]
         if not layer.locked and layer.visible:
+            cols = self.cols_slider.value()
+            rows = self.rows_slider.value()
             self.view_edit.undo_manager.save_state(self.layers)
-            layer.grid = v
-            layer.rebuild_grid()
-            self.lbl_grid_value.setText(f"{v}x{v}")
+            layer.set_grid(cols, rows)
+            self.lbl_grid_full.setText(f"Malha: {cols}x{rows}")
             self._update_all()
     
     def _change_opacity(self, v):
@@ -1930,7 +2003,8 @@ class MainWindow(QtWidgets.QMainWindow):
         for layer in self.layers:
             data['layers'].append({
                 'path': layer.path,
-                'grid': layer.grid,
+                'grid_cols': layer.grid_cols,
+                'grid_rows': layer.grid_rows,
                 'points': layer.points.tolist(),
                 'opacity': layer.opacity,
                 'visible': layer.visible,
@@ -1988,7 +2062,12 @@ class MainWindow(QtWidgets.QMainWindow):
             for ld in data['layers']:
                 try:
                     layer = Layer(ld['path'])
-                    layer.grid = ld['grid']
+                    if 'grid' in ld and 'grid_cols' not in ld:
+                        layer.grid_cols = ld['grid']
+                        layer.grid_rows = ld['grid']
+                    else:
+                        layer.grid_cols = ld.get('grid_cols', 1)
+                        layer.grid_rows = ld.get('grid_rows', 1)
                     layer.points = np.array(ld['points'], dtype=np.float32)
                     layer.opacity = ld['opacity']
                     layer.visible = ld.get('visible', True)
@@ -2022,7 +2101,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view_proj.update()
     
     def keyPressEvent(self, event):
-        # Atalhos que devem funcionar mesmo sem camadas
         if event.key() == QtCore.Qt.Key.Key_F11:
             self._toggle_fullscreen()
             return
@@ -2033,12 +2111,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self._deselect_point()
             return
         
-        # Atalhos que precisam de camadas
         if self.layers:
             if event.key() == QtCore.Qt.Key.Key_D and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
                 self._duplicate_layer(self.view_edit.active)
                 return
-            # Reordenamento de camadas
             elif event.key() == QtCore.Qt.Key.Key_Up and event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
                 if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
                     self._move_layer_to_top(self.view_edit.active)
@@ -2052,7 +2128,6 @@ class MainWindow(QtWidgets.QMainWindow):
                     self._move_layer_down(self.view_edit.active)
                 return
         
-        # Se não for nenhum atalho da MainWindow, passa para a GLView
         self.view_edit.keyPressEvent(event)
     
     def closeEvent(self, event):
